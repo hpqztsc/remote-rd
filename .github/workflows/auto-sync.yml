@@ -108,6 +108,22 @@ jobs:
           git commit -m "chore: sync upstream rustdesk ${VERSION}"
           git push origin HEAD:master
 
+      - name: Close stale upstream alerts
+        if: steps.run.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.run.outputs.version }}
+        run: |
+          set -euo pipefail
+          # 同步成功后，把"上游已更新"的提醒 issue 一并关掉，避免堆积
+          gh issue list --repo "$GITHUB_REPOSITORY" --state open \
+              --search "上游 rustdesk 已更新到 in:title" --json number --jq '.[].number' \
+            | while read -r n; do
+                [ -n "$n" ] || continue
+                gh issue close "$n" --repo "$GITHUB_REPOSITORY" \
+                  --comment "已自动同步到 ${VERSION} 并触发发版，本条关闭。"
+              done
+
       - name: Upload sync log
         if: always()
         uses: actions/upload-artifact@v4

@@ -1,14 +1,21 @@
+# 在线更新改为检查本仓库 (hpqztsc/remote-rd) 的 GitHub Releases，而非 api.rustdesk.com
+# 覆盖: src/common.rs (do_check_software_update) / src/updater.rs (下载源白名单)
+# 重新生成方式: 与上游基线对比 git diff 生成，勿手工编辑
 diff --git a/src/common.rs b/src/common.rs
-index 6225d0c..e7f8d3b 100644
+index 6225d0c..4e92376 100644
 --- a/src/common.rs
 +++ b/src/common.rs
-@@ -1030,16 +1030,29 @@ pub fn check_software_update() {
- // No need to check `danger_accept_invalid_cert` for now.
- // Because the url is always `https://api.rustdesk.com/version/latest`.
- #[tokio::main(flavor = "current_thread")]
+@@ -1027,19 +1027,32 @@ pub fn check_software_update() {
+     }
+ }
+ 
 +pub const UPDATE_REPO_OWNER: &str = "hpqztsc";
 +pub const UPDATE_REPO_NAME: &str = "remote-rd";
 +
+ // No need to check `danger_accept_invalid_cert` for now.
+-// Because the url is always `https://api.rustdesk.com/version/latest`.
++// Because the url is always our own GitHub release feed.
+ #[tokio::main(flavor = "current_thread")]
  pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
 -    let (request, url) =
 -        hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());

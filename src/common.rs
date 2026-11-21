@@ -1027,12 +1027,12 @@ pub fn check_software_update() {
     }
 }
 
-// No need to check `danger_accept_invalid_cert` for now.
-// Because the url is always `https://api.rustdesk.com/version/latest`.
-#[tokio::main(flavor = "current_thread")]
 pub const UPDATE_REPO_OWNER: &str = "hpqztsc";
 pub const UPDATE_REPO_NAME: &str = "remote-rd";
 
+// No need to check `danger_accept_invalid_cert` for now.
+// Because the url is always our own GitHub release feed.
+#[tokio::main(flavor = "current_thread")]
 pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
     // Query the release list instead of `/releases/latest`, because our CI marks
     // every release as prerelease, which GitHub excludes from "latest".
