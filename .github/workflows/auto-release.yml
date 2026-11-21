@@ -1,0 +1,131 @@
+# 自动发版：
+# 1) 每次 push 到 master，如果 Cargo.toml 里的版本还没有对应的 Release，就自动构建并发布该版本。
+# 2) 每天检查上游 rustdesk 是否发了更新的版本，若更新则开 issue 提醒同步源码。
+#
+# 说明：本仓库的源码由 sync.sh 合并上游后提交，版本号随上游同步一起变化，
+# 因此"上游更新 -> 同步提交 -> 本工作流自动发版"即可闭环，无需在 CI 里重写合并逻辑。
+name: Auto Release
+
+on:
+  push:
+    branches: [master]
+  workflow_dispatch:
+    inputs:
+      force:
+        description: "即使该版本已有 Release 也强制重新构建发布"
+        type: boolean
+        default: false
+  schedule:
+    # 每天 05:00 (Asia/Shanghai)
+    - cron: "0 21 * * *"
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: auto-release
+  cancel-in-progress: false
+
+jobs:
+  resolve:
+    name: Resolve version
+    runs-on: ubuntu-latest
+    outputs:
+      version: ${{ steps.local.outputs.version }}
+      should_release: ${{ steps.local.outputs.should_release }}
+      upstream_newer: ${{ steps.upstream.outputs.upstream_newer }}
+      upstream_version: ${{ steps.upstream.outputs.upstream_version }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Determine version to release
+        id: local
+        env:
+          FORCE: ${{ inputs.force }}
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          VERSION=$(grep -m1 '^version *= *"' Cargo.toml | sed -E 's/^version *= *"([^"]+)".*/\1/')
+          if [ -z "$VERSION" ]; then
+            echo "::error::cannot read version from Cargo.toml"
+            exit 1
+          fi
+          echo "Cargo.toml version: $VERSION"
+          echo "version=$VERSION" >> "$GITHUB_OUTPUT"
+
+          EXISTING=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases?per_page=100" \
+            | grep -oE '"tag_name" *: *"[^"]+"' | sed -E 's/.*"([^"]+)"$/\1/' || true)
+
+          echo "Existing release tags:"
+          echo "${EXISTING:-<none>}"
+
+          should=true
+          if [ "${FORCE:-false}" != "true" ] && echo "$EXISTING" | grep -qx "$VERSION"; then
+            echo "Release $VERSION already exists, nothing to do."
+            should=false
+          fi
+          echo "should_release=$should" >> "$GITHUB_OUTPUT"
+
+      - name: Check upstream rustdesk release
+        id: upstream
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          LOCAL=$(grep -m1 '^version *= *"' Cargo.toml | sed -E 's/^version *= *"([^"]+)".*/\1/')
+          UP=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+            "https://api.github.com/repos/rustdesk/rustdesk/releases/latest" \
+            | grep -oE '"tag_name" *: *"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/' || true)
+          echo "upstream version: ${UP:-<unknown>}, local: $LOCAL"
+          newer=false
+          if echo "$UP" | grep -qE '^v?[0-9]+\.[0-9]+\.[0-9]+$'; then
+            UP_STRIPPED=${UP#v}
+            HIGHEST=$(printf '%s\n%s\n' "$LOCAL" "$UP_STRIPPED" | sort -V | tail -1)
+            if [ "$HIGHEST" = "$UP_STRIPPED" ] && [ "$UP_STRIPPED" != "$LOCAL" ]; then
+              newer=true
+            fi
+            echo "upstream_version=$UP_STRIPPED" >> "$GITHUB_OUTPUT"
+          fi
+          echo "upstream_newer=$newer" >> "$GITHUB_OUTPUT"
+
+  build-and-release:
+    name: Build and release
+    needs: resolve
+    if: needs.resolve.outputs.should_release == 'true'
+    uses: ./.github/workflows/flutter-build.yml
+    secrets: inherit
+    with:
+      upload-artifact: true
+      upload-tag: ${{ needs.resolve.outputs.version }}
+
+  notify-upstream:
+    name: Notify upstream update
+    needs: resolve
+    if: needs.resolve.outputs.upstream_newer == 'true'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UP: ${{ needs.resolve.outputs.upstream_version }}
+      LOCAL: ${{ needs.resolve.outputs.version }}
+    steps:
+      - name: Open issue if not already open
+        run: |
+          set -euo pipefail
+          TITLE="上游 rustdesk 已更新到 ${UP}（当前 ${LOCAL}），请同步源码"
+          OPEN=$(gh issue list --repo "${GITHUB_REPOSITORY}" --state open --search "上游 rustdesk 已更新到 in:title" --json number --jq 'length' || echo 0)
+          if [ "$OPEN" != "0" ]; then
+            echo "已存在同类 issue，跳过。"
+            exit 0
+          fi
+          gh issue create --repo "${GITHUB_REPOSITORY}" \
+            --title "$TITLE" \
+            --body "上游 rustdesk 最新版本：**${UP}**，本仓库当前：**${LOCAL}**。
+
+          处理步骤：
+          1. 在服务器上执行 \`cd /root/project/workspace/remotedesk && ./sync.sh sync\`（会拉取上游、重新套用定制与补丁、提交并推送）。
+          2. 若 \`patches/\` 里的补丁因上游重构而应用失败，脚本会直接中止并提示，需先重新生成补丁。
+          3. 推送后本仓库的 Auto Release 工作流会自动构建并发布新版本，无需手工打 tag。"
