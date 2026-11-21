@@ -1,0 +1,161 @@
+# 在 GitHub 上自动跟进上游 rustdesk：
+# 1) 检测上游最新版本，若比本仓库新，则在 runner 里把上游源码摊平合并进来并重新套用全部定制；
+# 2) 定制全部校验通过才提交并推送，然后直接构建发布；
+# 3) 任何定制无法套用（上游重构了相关代码）则不提交、不发布，改为开 issue 提示重新生成补丁。
+#
+# 全程不依赖本地环境。
+name: Auto Sync Upstream
+
+on:
+  schedule:
+    # 每天 04:30 (Asia/Shanghai)
+    - cron: "30 20 * * *"
+  workflow_dispatch:
+    inputs:
+      upstream_ref:
+        description: "上游 tag 或 commit（留空则自动取最新 release）"
+        required: false
+        type: string
+
+permissions:
+  contents: write
+  issues: write
+
+concurrency:
+  group: auto-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    name: Sync upstream source
+    runs-on: ubuntu-latest
+    outputs:
+      changed: ${{ steps.run.outputs.changed }}
+      version: ${{ steps.run.outputs.version }}
+      reason: ${{ steps.run.outputs.reason }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Resolve target upstream ref
+        id: target
+        env:
+          GH_TOKEN: ${{ github.token }}
+          INPUT_REF: ${{ inputs.upstream_ref }}
+        run: |
+          set -euo pipefail
+          if [ -n "${INPUT_REF:-}" ]; then
+            REF="$INPUT_REF"
+          else
+            REF=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/rustdesk/rustdesk/releases/latest" \
+              | grep -oE '"tag_name" *: *"[^"]+"' | head -1 | sed -E 's/.*"([^"]+)"$/\1/')
+          fi
+          if [ -z "${REF:-}" ]; then
+            echo "::error::无法确定上游版本"
+            exit 1
+          fi
+          echo "target=$REF" >> "$GITHUB_OUTPUT"
+          echo "目标上游: $REF"
+
+      - name: Run sync
+        id: run
+        env:
+          TARGET: ${{ steps.target.outputs.target }}
+        run: |
+          set -uo pipefail
+          LOCAL=$(grep -m1 '^version *= *"' Cargo.toml | sed -E 's/^version *= *"([^"]+)".*/\1/')
+          TARGET_VER="${TARGET#v}"
+
+          # 已经是同一版本就不做任何事
+          if [ "$TARGET_VER" = "$LOCAL" ]; then
+            echo "本仓库已是 $LOCAL，无需同步。"
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "reason=up-to-date" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+
+          set -o pipefail
+          bash .github/custom/sync-upstream.sh "$TARGET" 2>&1 | tee /tmp/sync.log
+          RC=${PIPESTATUS[0]}
+
+          if [ "$RC" -ne 0 ]; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            echo "reason=sync-failed-$RC" >> "$GITHUB_OUTPUT"
+            echo "::warning::同步失败，退出码 $RC（2 = 定制无法套用）"
+            exit 0
+          fi
+
+          NEW_VER=$(grep -m1 '^version *= *"' Cargo.toml | sed -E 's/^version *= *"([^"]+)".*/\1/')
+          echo "version=$NEW_VER" >> "$GITHUB_OUTPUT"
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+          echo "reason=synced" >> "$GITHUB_OUTPUT"
+
+      - name: Commit and push
+        if: steps.run.outputs.changed == 'true'
+        env:
+          VERSION: ${{ steps.run.outputs.version }}
+        run: |
+          set -euo pipefail
+          git config user.name  "ztsc"
+          git config user.email "hpqztsc@foxmail.com"
+          git add -A
+          if git diff --cached --quiet; then
+            echo "无内容变化，跳过提交。"
+            exit 0
+          fi
+          git commit -m "chore: sync upstream rustdesk ${VERSION}"
+          git push origin HEAD:master
+
+      - name: Upload sync log
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: sync-log
+          path: /tmp/sync.log
+          if-no-files-found: ignore
+
+  release:
+    name: Build and release
+    needs: sync
+    if: needs.sync.outputs.changed == 'true'
+    uses: ./.github/workflows/flutter-build.yml
+    secrets: inherit
+    with:
+      upload-artifact: true
+      upload-tag: ${{ needs.sync.outputs.version }}
+
+  report:
+    name: Report sync result
+    needs: sync
+    if: needs.sync.outputs.reason != 'synced' && needs.sync.outputs.reason != 'up-to-date'
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      REASON: ${{ needs.sync.outputs.reason }}
+      TARGET: ${{ needs.sync.outputs.version }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Open issue when customizations cannot be applied
+        run: |
+          set -euo pipefail
+          TITLE="自动同步上游失败（${REASON}），需重新生成补丁"
+          OPEN=$(gh issue list --repo "$GITHUB_REPOSITORY" --state open --search "自动同步上游失败 in:title" --json number --jq 'length' || echo 0)
+          if [ "$OPEN" != "0" ]; then
+            echo "已存在同类 issue，跳过。"
+            exit 0
+          fi
+          gh issue create --repo "$GITHUB_REPOSITORY" \
+            --title "$TITLE" \
+            --body "自动同步上游源码时失败：\`${REASON}\`（退出码 2 表示定制无法套用）。
+
+          说明上游改动了补丁依赖的代码结构。处理方式：
+
+          1. 查看本次运行的 \`sync-log\` 工件，或在本地执行：
+             \`\`\`bash
+             git clone git@github.com:hpqztsc/remote-rd.git /tmp/rd && cd /tmp/rd
+             bash .github/custom/sync-upstream.sh <上游tag>
+             \`\`\`
+          2. 按报错修正 \`.github/custom/patches/\` 下的补丁（或脚本里的 sed/perl 锚点）。
+          3. 提交补丁后重新运行 Auto Sync Upstream 工作流。"
