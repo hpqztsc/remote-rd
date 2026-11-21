@@ -376,8 +376,11 @@ pub fn get_update_download_file_from_url(url: &str) -> Option<PathBuf> {
     let tag = segments.next()?;
     let filename = segments.next()?;
 
-    if owner != "rustdesk"
-        || repo != "rustdesk"
+    // Allow updates from our own release repository as well as upstream.
+    let repo_allowed = (owner == "rustdesk" && repo == "rustdesk")
+        || (owner == crate::common::UPDATE_REPO_OWNER
+            && repo == crate::common::UPDATE_REPO_NAME);
+    if !repo_allowed
         || releases != "releases"
         || download != "download"
         || tag.is_empty()
