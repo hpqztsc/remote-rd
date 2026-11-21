@@ -65,8 +65,19 @@ jobs:
 
           should=true
           if [ "${FORCE:-false}" != "true" ] && echo "$EXISTING" | grep -qx "$VERSION"; then
-            echo "Release $VERSION already exists, nothing to do."
-            should=false
+            # 同名 Release 存在并不代表构建已完成（例如只上传了 sbom），
+            # 必须确认安装包真的在，否则视为未发布并补建。
+            EXE_COUNT=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
+              "https://api.github.com/repos/${GITHUB_REPOSITORY}/releases/tags/${VERSION}" \
+              | jq -r '[.assets[].name] | map(select(endswith(".exe"))) | length' 2>/dev/null || echo 0)
+            case "$EXE_COUNT" in ([0-9]*) ;; (*) EXE_COUNT=0 ;; esac
+            echo "Release $VERSION exists with $EXE_COUNT exe asset(s)."
+            if [ "$EXE_COUNT" -gt 0 ]; then
+              echo "Release $VERSION already has binaries, nothing to do."
+              should=false
+            else
+              echo "Release $VERSION has no binaries yet, rebuilding."
+            fi
           fi
           echo "should_release=$should" >> "$GITHUB_OUTPUT"
 
