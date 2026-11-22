@@ -63,8 +63,14 @@ jobs:
           echo "Existing release tags:"
           echo "${EXISTING:-<none>}"
 
+          # 定制：commit message 带 [rebuild] 时强制重建同名 Release。
+          # 否则改完源码 push 上去会因为该版本已有 exe 而被跳过，
+          # 只能手动 workflow_dispatch。
+          MSG=$(git log -1 --pretty=%B 2>/dev/null || true)
           should=true
-          if [ "${FORCE:-false}" != "true" ] && echo "$EXISTING" | grep -qx "$VERSION"; then
+          if echo "$MSG" | grep -q '\[rebuild\]'; then
+            echo "commit message contains [rebuild], rebuilding $VERSION"
+          elif [ "${FORCE:-false}" != "true" ] && echo "$EXISTING" | grep -qx "$VERSION"; then
             # 同名 Release 存在并不代表构建已完成（例如只上传了 sbom），
             # 必须确认安装包真的在，否则视为未发布并补建。
             EXE_COUNT=$(curl -sS -H "Authorization: Bearer $GH_TOKEN" \
