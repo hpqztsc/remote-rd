@@ -9,6 +9,12 @@ on:
       upload-tag:
         type: string
         default: "nightly"
+      # 定制：产物文件名里的版本号。必须由调用方传 Cargo.toml 的版本，
+      # 否则 tag 是 1.5.4 而产物仍叫 rustdesk-1.5.3-*.apk，
+      # publish-update-manifest 按 tag 拼文件名就会一个都匹配不到。
+      version:
+        type: string
+        default: ""
       publish-update-metadata:
         type: boolean
         default: false
@@ -53,7 +59,8 @@ env:
   VCPKG_COMMIT_ID: "9e593bb18ea69cc5095e012465dcd675a822ed0d"
   VCPKG_CMAKE_VERSION: "4.3.0"
   ARMV7_VCPKG_COMMIT_ID: "6f29f12e82a8293156836ad81cc9bf5af41fe836" # 2025.01.13, got "/opt/artifacts/vcpkg/vcpkg: No such file or directory" with latest version
-  VERSION: "1.5.3"
+  # 定制：由 workflow_call 的 version 输入决定，未传时回退到上游默认值。
+  VERSION: "${{ inputs.version || '1.5.3' }}"
   NDK_VERSION: "r28c"
   #signing keys env variable checks
   ANDROID_SIGNING_KEY: "${{ secrets.ANDROID_SIGNING_KEY }}"

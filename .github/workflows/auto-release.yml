@@ -72,6 +72,13 @@ jobs:
           should=true
           if echo "$MSG" | grep -q '\[rebuild\]'; then
             echo "commit message contains [rebuild], rebuilding $VERSION"
+            # 定制：action-gh-release 只会覆盖同名资产，改名过的旧产物会残留下来，
+            # 让 rustdesk-update.json 匹配到错误版本的文件。重建前先删干净再重建。
+            if echo "$EXISTING" | grep -qx "$VERSION"; then
+              echo "deleting existing release $VERSION before rebuild"
+              gh release delete "$VERSION" --yes --cleanup-tag \
+                || gh release delete "$VERSION" --yes || true
+            fi
           elif [ "${FORCE:-false}" != "true" ] && echo "$EXISTING" | grep -qx "$VERSION"; then
             # 同名 Release 存在并不代表构建已完成（例如只上传了 sbom），
             # 必须确认安装包真的在，否则视为未发布并补建。
@@ -120,6 +127,7 @@ jobs:
     with:
       upload-artifact: true
       upload-tag: ${{ needs.resolve.outputs.version }}
+      version: ${{ needs.resolve.outputs.version }}
 
   publish-manifest:
     name: Publish update manifest
