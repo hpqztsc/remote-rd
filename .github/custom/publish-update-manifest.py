@@ -107,7 +107,8 @@ def main():
     assets = {a["name"]: a for a in release.get("assets", [])}
     log(f"发布资产数量: {len(assets)}")
 
-    artifact_args = []
+    artifact_args = []   # sign 用：--artifact 平台 架构 格式 路径
+    artifact_paths = []  # verify 用：--artifact 只收单个本地路径
     base_url = f"https://github.com/{args.repo}/releases/download"
     workspace = tempfile.mkdtemp(prefix="update-manifest-")
     art_dir = os.path.join(workspace, "artifacts")
@@ -124,6 +125,7 @@ def main():
             log(f"  下载 {chosen} ({assets[chosen].get('size', 0) / 1048576:.1f} MB)")
             download(assets[chosen]["browser_download_url"], dest, token)
             artifact_args += ["--artifact", platform, arch, fmt, dest]
+            artifact_paths.append(dest)
 
         if not artifact_args:
             raise SystemExit("没有可写入清单的安装包，终止")
@@ -145,10 +147,15 @@ def main():
         subprocess.run(cmd, check=True)
 
         # 自检：用同一个工具验证刚生成的清单
+        # 注意：verify 的 --artifact 只接收本地文件路径（sign 收 平台/架构/格式/路径 四元组），
+        # 两者参数形态不同，不能共用同一份参数列表。
+        verify_args = []
+        for path in artifact_paths:
+            verify_args += ["--artifact", path]
         subprocess.run([sys.executable, GENERATOR, "verify",
                         "--metadata", meta_path,
                         "--signature", sig_path,
-                        *artifact_args,
+                        *verify_args,
                         "--version", version,
                         "--release-id", version,
                         "--package-id", "rustdesk",
@@ -170,4 +177,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
