@@ -1,0 +1,26 @@
+diff --git a/flutter/lib/desktop/pages/desktop_home_page.dart b/flutter/lib/desktop/pages/desktop_home_page.dart
+index 12951ca..d914f3e 100644
+--- a/flutter/lib/desktop/pages/desktop_home_page.dart
++++ b/flutter/lib/desktop/pages/desktop_home_page.dart
+@@ -451,7 +451,7 @@ class _DesktopHomePageState extends State<DesktopHomePage>
+           closeButton: true,
+           help: isToUpdate ? 'Changelog' : null,
+           link: isToUpdate
+-              ? 'https://github.com/rustdesk/rustdesk/releases/tag/${bind.mainGetNewVersion()}'
++              ? 'https://github.com/hpqztsc/remote-rd/releases/tag/${bind.mainGetNewVersion()}'
+               : null);
+     }
+     if (systemError.isNotEmpty) {
+diff --git a/flutter/lib/mobile/pages/connection_page.dart b/flutter/lib/mobile/pages/connection_page.dart
+index ff5dc82..8d642a1 100644
+--- a/flutter/lib/mobile/pages/connection_page.dart
++++ b/flutter/lib/mobile/pages/connection_page.dart
+@@ -124,7 +124,7 @@ class _ConnectionPageState extends State<ConnectionPage> {
+         ? const SizedBox(height: 0)
+         : InkWell(
+             onTap: () async {
+-              final url = 'https://rustdesk.com/download';
++              final url = 'https://github.com/hpqztsc/remote-rd/releases';
+               // https://pub.dev/packages/url_launcher#configuration
+               // https://developer.android.com/training/package-visibility/use-cases#open-urls-custom-tabs
+               //
