@@ -1,0 +1,13 @@
+diff --git a/flutter/lib/desktop/pages/desktop_setting_page.dart b/flutter/lib/desktop/pages/desktop_setting_page.dart
+index 730d758..c36f719 100644
+--- a/flutter/lib/desktop/pages/desktop_setting_page.dart
++++ b/flutter/lib/desktop/pages/desktop_setting_page.dart
+@@ -2625,7 +2625,7 @@ class _AboutState extends State<_About> {
+                   ).marginSymmetric(vertical: 4.0)),
+               InkWell(
+                   onTap: () {
+-                    launchUrlString('https://rustdesk.com');
++                    launchUrlString('https://github.com/hpqztsc/remote-rd/releases');
+                   },
+                   child: Text(
+                     translate('Website'),
