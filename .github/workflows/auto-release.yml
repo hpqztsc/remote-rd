@@ -25,7 +25,9 @@ permissions:
 
 concurrency:
   group: auto-release
-  cancel-in-progress: false
+  # 定制：新构建直接取代旧构建。
+  # 否则一个卡住的 job（如 Linux armv7）会把后续所有出包请求堵在队列里。
+  cancel-in-progress: true
 
 jobs:
   resolve:
