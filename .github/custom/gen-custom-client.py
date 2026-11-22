@@ -76,7 +76,8 @@ def main():
     payload = json.dumps(config, separators=(",", ":"), sort_keys=True).encode("utf-8")
     signed = bytes(signing_key.sign(payload))          # 64B 签名 || payload
     encoded = base64.b64encode(signed).decode("ascii")
-    OUT_PATH.write_text(encoded + "\n", encoding="utf-8")
+    # 固定 LF：仓库里的文件是 LF，Windows 上用默认换行会写成 CRLF 造成假 diff
+    OUT_PATH.write_text(encoded + "\n", encoding="utf-8", newline="\n")
 
     # 自检：确保客户端那边能解出同样的 JSON
     back = json.loads(verify_key.verify(base64.b64decode(encoded, validate=True)))
