@@ -1033,7 +1033,12 @@ pub fn codec_thread_num(limit: usize) -> usize {
 fn disable_av1() -> bool {
     // aom is very slow for x86 sciter version on windows x64
     // disable it for all 32 bit platforms
-    std::mem::size_of::<usize>() == 4
+    //
+    // 定制：64 位平台也一律禁用 AV1。
+    // 上游对 64 位无条件声明 av1 可用、不做运行时探测，而多数设备（骁龙 870 的安卓机、
+    // Intel QSV 的 Windows）并没有 AV1 硬件编码器，协商到 AV1 后 aom 软编出不了帧，
+    // 被控端画面会永远停在“等待传输画面”。禁用后回落到 H264（硬编）或 VP8（软编）。
+    true
 }
 
 #[cfg(not(target_os = "ios"))]
