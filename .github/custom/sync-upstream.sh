@@ -20,7 +20,7 @@ RUSTDESK_URL="${UPSTREAM_RUSTDESK_URL:-https://github.com/rustdesk/rustdesk.git}
 HBB_URL="${UPSTREAM_HBB_URL:-https://github.com/rustdesk/hbb_common.git}"
 
 CUSTOM_DIR=".github/custom"      # 本仓库自有内容，同步后需保留
-KEEP_WORKFLOWS="auto-release.yml auto-sync.yml"
+KEEP_WORKFLOWS="auto-release.yml auto-sync.yml publish-update-manifest.yml"
 
 log() { printf '\n\033[1;32m[sync]\033[0m %s\n' "$*"; }
 err() { printf '\n\033[1;31m[sync:error]\033[0m %s\n' "$*"; }

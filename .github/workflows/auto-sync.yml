@@ -142,6 +142,15 @@ jobs:
       upload-artifact: true
       upload-tag: ${{ needs.sync.outputs.version }}
 
+  publish-manifest:
+    name: Publish update manifest
+    needs: [sync, release]
+    if: needs.sync.outputs.changed == 'true'
+    uses: ./.github/workflows/publish-update-manifest.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.sync.outputs.version }}
+
   report:
     name: Report sync result
     needs: sync

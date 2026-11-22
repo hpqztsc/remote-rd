@@ -1,12 +1,19 @@
-# 在线更新改为检查本仓库 (hpqztsc/remote-rd) 的 GitHub Releases，而非 api.rustdesk.com
-# 覆盖: src/common.rs (do_check_software_update) / src/updater.rs (下载源白名单)
-# 重新生成方式: 与上游基线对比 git diff 生成，勿手工编辑
 diff --git a/src/common.rs b/src/common.rs
-index 6225d0c..4e92376 100644
+index 4f42124..62bfb5c 100644
 --- a/src/common.rs
 +++ b/src/common.rs
-@@ -1027,19 +1027,32 @@ pub fn check_software_update() {
-     }
+@@ -1099,6 +1099,9 @@ pub(crate) fn release_id_from_update_url(update_url: &str) -> ResultType<String>
+     let release_id = match segments.as_slice() {
+         ["rustdesk", "rustdesk", "releases", "tag", release_id] => *release_id,
+         ["rustdesk", "rustdesk", "releases", "tag", release_id, ""] => *release_id,
++        // 本仓库（自有 fork）的发布页，须与 UPDATE_REPO_OWNER/NAME 保持一致
++        ["hpqztsc", "remote-rd", "releases", "tag", release_id] => *release_id,
++        ["hpqztsc", "remote-rd", "releases", "tag", release_id, ""] => *release_id,
+         _ => bail!(
+             "Update URL is not a RustDesk release tag URL: {}",
+             update_url
+@@ -1173,26 +1176,42 @@ fn process_software_update_check_response(bytes: Bytes) -> ResultType<()> {
+     Ok(())
  }
  
 +pub const UPDATE_REPO_OWNER: &str = "hpqztsc";
@@ -19,8 +26,6 @@ index 6225d0c..4e92376 100644
  pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
 -    let (request, url) =
 -        hbb_common::version_check_request(hbb_common::VER_TYPE_RUSTDESK_CLIENT.to_string());
-+    // Query the release list instead of `/releases/latest`, because our CI marks
-+    // every release as prerelease, which GitHub excludes from "latest".
 +    let url = format!(
 +        "https://api.github.com/repos/{}/{}/releases?per_page=30",
 +        UPDATE_REPO_OWNER, UPDATE_REPO_NAME
@@ -31,44 +36,48 @@ index 6225d0c..4e92376 100644
      let is_tls_not_cached = tls_type.is_none();
      let tls_type = tls_type.unwrap_or(TlsType::Rustls);
      let client = create_http_client_async(tls_type, false);
--    let latest_release_response = match client.post(&url).json(&request).send().await {
-+    let latest_release_response = match client
+-    let latest_release_response: ResultType<_> = match client.post(&url).json(&request).send().await
++    let latest_release_response: ResultType<_> = match client
 +        .get(&url)
 +        .header("Accept", "application/vnd.github+json")
 +        .header("User-Agent", "rustdesk-update-check")
 +        .send()
 +        .await
-+    {
-         Ok(resp) => {
-             upsert_tls_cache(tls_url, tls_type, false);
-             resp
-@@ -1048,7 +1061,12 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
+     {
+         Ok(resp) => Ok((tls_type, resp)),
+         Err(err) => {
              if is_tls_not_cached && err.is_request() {
                  let tls_type = TlsType::NativeTls;
                  let client = create_http_client_async(tls_type, false);
--                let resp = client.post(&url).json(&request).send().await?;
-+                let resp = client
+-                match client.post(&url).json(&request).send().await {
++                match client
 +                    .get(&url)
 +                    .header("Accept", "application/vnd.github+json")
 +                    .header("User-Agent", "rustdesk-update-check")
 +                    .send()
-+                    .await?;
-                 upsert_tls_cache(tls_url, tls_type, false);
-                 resp
-             } else {
-@@ -1057,9 +1075,37 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
++                    .await
++                {
+                     Ok(resp) => Ok((tls_type, resp)),
+                     Err(err) => Err(err.into()),
+                 }
+@@ -1215,13 +1234,40 @@ pub async fn do_check_software_update() -> hbb_common::ResultType<()> {
          }
+         Err(err) => Err(err),
      };
-     let bytes = latest_release_response.bytes().await?;
--    let resp: hbb_common::VersionCheckResponse = serde_json::from_slice(&bytes)?;
--    let response_url = resp.url;
--    let latest_release_version = response_url.rsplit('/').next().unwrap_or_default();
+-    let result = response_bytes.and_then(process_software_update_check_response);
++    let result = response_bytes.and_then(process_software_update_check_response_github);
+     if result.is_err() {
+         clear_software_update_url();
+     }
+     result
+ }
+ 
++fn process_software_update_check_response_github(bytes: Bytes) -> ResultType<()> {
 +    let resp: Value = serde_json::from_slice(&bytes)?;
-+    // Releases come back newest first; pick the first non-draft tag that looks
-+    // like a version ("master" or other names are skipped).
-+    let latest_release_version = resp
++    // GitHub 按发布时间倒序返回 Release；跳过 draft 与非版本号 tag（例如 master）。
++    let release_id = resp
 +        .as_array()
-+        .map(|releases| {
++        .and_then(|releases| {
 +            releases
 +                .iter()
 +                .filter(|release| {
@@ -78,40 +87,69 @@ index 6225d0c..4e92376 100644
 +                        .unwrap_or(false)
 +                })
 +                .filter_map(|release| release.get("tag_name").and_then(|tag| tag.as_str()))
-+                .map(|tag| tag.trim().to_string())
++                .map(|tag| tag.trim().to_owned())
 +                .find(|tag| get_version_number(tag) > 0)
-+                .unwrap_or_default()
 +        })
-+        .unwrap_or_default();
-+    if latest_release_version.is_empty() {
-+        return Err(anyhow!(
-+            "no versioned release found in {}/{}",
-+            UPDATE_REPO_OWNER,
-+            UPDATE_REPO_NAME
-+        ));
-+    }
++        .ok_or_else(|| anyhow!("no versioned release found in our update feed"))?;
 +    let response_url = format!(
 +        "https://github.com/{}/{}/releases/tag/{}",
-+        UPDATE_REPO_OWNER, UPDATE_REPO_NAME, latest_release_version
++        UPDATE_REPO_OWNER, UPDATE_REPO_NAME, release_id
 +    );
++    // 复用上游的校验链路：release_id 白名单 + 展示版本校验。
++    process_software_update_check_response(Bytes::from(json!({ "url": response_url }).to_string()))
++}
++
+ #[inline]
+ pub fn get_app_name() -> String {
+     hbb_common::config::APP_NAME.read().unwrap().clone()
+diff --git a/src/update_metadata.rs b/src/update_metadata.rs
+index 7dd275f..50e7068 100644
+--- a/src/update_metadata.rs
++++ b/src/update_metadata.rs
+@@ -31,8 +31,8 @@ const TRUSTED_UPDATE_KEYS: &[TrustedUpdateKey] = &[TrustedUpdateKey {
+     key_id: "2026-ed25519-main",
+     algorithm: SIGNATURE_ALGORITHM,
+     public_key: [
+-        52, 214, 32, 65, 191, 134, 137, 75, 157, 74, 67, 221, 150, 161, 118, 215, 218, 35, 236,
+-        156, 127, 120, 133, 156, 197, 141, 37, 22, 47, 106, 181, 177,
++        218, 121, 188, 221, 250, 141, 164, 85, 244, 68, 110, 32, 34, 90, 143, 84, 148, 153, 231,
++        63, 75, 163, 252, 78, 172, 120, 224, 61, 43, 218, 203, 122,
+     ],
+ }];
  
-     if get_version_number(&latest_release_version) > get_version_number(crate::VERSION) {
-         #[cfg(feature = "flutter")]
-diff --git a/src/updater.rs b/src/updater.rs
-index 0c17840..7ab1838 100644
---- a/src/updater.rs
-+++ b/src/updater.rs
-@@ -376,8 +376,11 @@ pub fn get_update_download_file_from_url(url: &str) -> Option<PathBuf> {
+diff --git a/src/updater/artifact.rs b/src/updater/artifact.rs
+index 39a8245..fb12e98 100644
+--- a/src/updater/artifact.rs
++++ b/src/updater/artifact.rs
+@@ -106,8 +106,16 @@ pub(super) fn verified_update_artifact_from_release_page_url(
+ ) -> ResultType<VerifiedUpdateArtifact> {
+     let release_id = release_id_from_update_url(update_url)?;
+     let display_version = display_version_from_release_id(&release_id)?;
++    // 从发布页 URL 推导 owner/repo，使自有仓库的发布也能走同一套清单校验。
++    let release_page = url::Url::parse(update_url)?;
++    let mut page_segments = match release_page.path_segments() {
++        Some(segments) => segments,
++        None => bail!("update URL has no path"),
++    };
++    let owner = page_segments.next().unwrap_or_default();
++    let repo = page_segments.next().unwrap_or_default();
+     let expected_artifact_url_prefix =
+-        format!("https://github.com/rustdesk/rustdesk/releases/download/{release_id}/");
++        format!("https://github.com/{owner}/{repo}/releases/download/{release_id}/");
+     let metadata_url = format!("{expected_artifact_url_prefix}rustdesk-update.json");
+     let signature_url = format!("{metadata_url}.sig");
+     let metadata_bytes = fetch_update_sidecar_bytes(&metadata_url)?;
+@@ -177,8 +185,10 @@ pub fn get_update_download_file_from_url(url: &str) -> Option<PathBuf> {
      let tag = segments.next()?;
      let filename = segments.next()?;
  
 -    if owner != "rustdesk"
 -        || repo != "rustdesk"
-+    // Allow updates from our own release repository as well as upstream.
-+    let repo_allowed = (owner == "rustdesk" && repo == "rustdesk")
++    let trusted_repo = (owner == "rustdesk" && repo == "rustdesk")
 +        || (owner == crate::common::UPDATE_REPO_OWNER
 +            && repo == crate::common::UPDATE_REPO_NAME);
-+    if !repo_allowed
++    if !trusted_repo
          || releases != "releases"
          || download != "download"
          || tag.is_empty()
+

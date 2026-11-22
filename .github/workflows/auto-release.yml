@@ -113,6 +113,15 @@ jobs:
       upload-artifact: true
       upload-tag: ${{ needs.resolve.outputs.version }}
 
+  publish-manifest:
+    name: Publish update manifest
+    needs: [resolve, build-and-release]
+    if: needs.resolve.outputs.should_release == 'true'
+    uses: ./.github/workflows/publish-update-manifest.yml
+    secrets: inherit
+    with:
+      version: ${{ needs.resolve.outputs.version }}
+
   notify-upstream:
     name: Notify upstream update
     needs: resolve
