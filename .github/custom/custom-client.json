@@ -1,0 +1,9 @@
+{
+  "default-settings": {
+    "hide-help-cards": "Y",
+    "hide-powered-by-me": "Y"
+  },
+  "override-settings": {
+    "hide-powered-by-me": "Y"
+  }
+}

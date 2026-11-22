@@ -1,0 +1,28 @@
+diff --git a/src/common.rs b/src/common.rs
+index 62bfb5c..2625f55 100644
+--- a/src/common.rs
++++ b/src/common.rs
+@@ -2553,6 +2553,13 @@ pub fn rustdesk_interval(i: Interval) -> ThrottledInterval {
+ }
+ 
+ pub fn load_custom_client() {
++    // 编译期内嵌的自有定制配置：便携版 / MSI / macOS / Linux / APK 统一生效，
++    // 不依赖 exe 同级是否放了 custom.txt；外部文件若存在仍会覆盖这里的值。
++    const EMBEDDED_CUSTOM_CLIENT: &str = include_str!("../.github/custom/custom-client.txt");
++    if !EMBEDDED_CUSTOM_CLIENT.trim().is_empty() {
++        read_custom_client(EMBEDDED_CUSTOM_CLIENT.trim());
++    }
++
+     #[cfg(debug_assertions)]
+     if let Ok(data) = std::fs::read_to_string("./custom.txt") {
+         read_custom_client(data.trim());
+@@ -2655,7 +2662,8 @@ pub fn read_custom_client(config: &str) {
+         log::error!("Failed to decode custom client config");
+         return;
+     };
+-    const KEY: &str = "5Qbwsde3unUcJBtrx9ZkvUmwFNoExHzpryHuPUdqlWM=";
++    // 自有定制客户端签名公钥（seed 存于仓库 secret），已替换上游官方公钥
++    const KEY: &str = "2nm83fqNpFX0RG4gIlqPVJSZ5z9Lo/xOrHjgPSvay3o=";
+     let Some(pk) = get_rs_pk(KEY) else {
+         log::error!("Failed to parse public key of custom client");
+         return;
