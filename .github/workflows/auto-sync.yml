@@ -76,9 +76,14 @@ jobs:
             exit 0
           fi
 
+          # GitHub Actions 的默认 shell 是 `bash -e`，管道返回非零会立刻中断本步，
+          # 导致下面的 RC 永远捕获不到、reason 输出为空，最终 report 作业被跳过、
+          # 失败彻底静默。这里必须显式关掉 -e 再跑管道。
+          set +e
           set -o pipefail
           bash .github/custom/sync-upstream.sh "$TARGET" 2>&1 | tee /tmp/sync.log
           RC=${PIPESTATUS[0]}
+          set -e
 
           if [ "$RC" -ne 0 ]; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
@@ -154,11 +159,13 @@ jobs:
   report:
     name: Report sync result
     needs: sync
-    if: needs.sync.outputs.reason != 'synced' && needs.sync.outputs.reason != 'up-to-date'
+    # always() 不可省：sync 作业本身失败时，GitHub 会默认跳过依赖它的作业，
+    # 那样"开 issue 提醒重新生成补丁"这一步永远不会执行，失败就彻底没声音了。
+    if: always() && needs.sync.outputs.reason != 'synced' && needs.sync.outputs.reason != 'up-to-date'
     runs-on: ubuntu-latest
     env:
       GH_TOKEN: ${{ github.token }}
-      REASON: ${{ needs.sync.outputs.reason }}
+      REASON: ${{ needs.sync.outputs.reason || 'sync-job-failed' }}
       TARGET: ${{ needs.sync.outputs.version }}
     steps:
       - uses: actions/checkout@v4
