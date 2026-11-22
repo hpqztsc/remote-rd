@@ -132,7 +132,10 @@ jobs:
   publish-manifest:
     name: Publish update manifest
     needs: [resolve, build-and-release]
-    if: needs.resolve.outputs.should_release == 'true'
+    # 定制：ios ipa 是长期失败项，会让整个 build-and-release 变成 failure，
+    # 默认的 needs 语义会连带跳过这里，于是 Release 缺 rustdesk-update.json，
+    # 客户端提示有新版本却装不上。此时安装包都已上传，改成 always() 即可。
+    if: always() && needs.resolve.outputs.should_release == 'true'
     uses: ./.github/workflows/publish-update-manifest.yml
     secrets: inherit
     with:
