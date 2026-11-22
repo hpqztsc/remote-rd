@@ -129,6 +129,13 @@ grep -q 'admin\.rustdesk\.com' src/common.rs \
 grep -qF 'children: []' "$DART" \
   && ok "服务器设置入口已隐藏" || bad "服务器设置入口未隐藏"
 
+# AV1 必须全局禁用：上游只对 32 位禁用，64 位声明可用但不做运行时探测，
+# 无 AV1 硬编的设备协商到 AV1 后会永远停在等待传输画面。
+if sed -n '/^fn disable_av1() -> bool {/,/^}/p' libs/scrap/src/common/codec.rs | grep -q 'size_of::<usize>() == 4'; then
+  bad "AV1 未被禁用（disable_av1 仍按位宽判断）"
+else
+  ok "AV1 已全局禁用"
+fi
 if [ "$fail" -ne 0 ]; then
   err "定制校验未通过，拒绝提交（避免发布未定制的构建）。"
   exit 2
