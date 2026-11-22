@@ -1617,6 +1617,10 @@ pub async fn change_id_shared_(id: String, old_id: String) -> &'static str {
         {
             Config::set_key_confirmed(false);
             Config::set_id(&id);
+            // 定制：立即用新 ID 重新向 rendezvous 服务器注册。
+            // 不重启的话界面虽然显示新 ID，但服务端仍是旧 ID，
+            // 外部设备按新 ID 连不进来（实测 5 分钟内无 update_pk）。
+            crate::rendezvous_mediator::RendezvousMediator::restart();
         }
     }
     err
