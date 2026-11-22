@@ -1,0 +1,103 @@
+diff --git a/flutter/lib/common/widgets/dialog.dart b/flutter/lib/common/widgets/dialog.dart
+index 23f527f..0073b6a 100644
+--- a/flutter/lib/common/widgets/dialog.dart
++++ b/flutter/lib/common/widgets/dialog.dart
+@@ -109,8 +109,11 @@ void changeIdDialog() {
+         status = await bind.mainGetAsyncStatus();
+       }
+       if (status.isEmpty) {
+-        // ok
++        // 定制：改 ID 成功后立即刷新界面上的 ID 显示，并给出明确反馈，
++        // 否则要等 server_page 的 3 秒轮询，用户会误以为没改成功。
++        await gFFI.serverModel.fetchID();
+         close();
++        showToast(translate('ID changed successfully'));
+         return;
+       }
+       setState(() {
+@@ -126,6 +129,29 @@ void changeIdDialog() {
+       content: Column(
+         crossAxisAlignment: CrossAxisAlignment.start,
+         children: [
++          // 定制：把当前 ID 显示出来，改完能立刻对照是否生效。
++          Row(children: [
++            Text('${translate('Current ID')}: ',
++                style: const TextStyle(fontSize: 12, color: Colors.grey)),
++            Flexible(
++              child: Text(
++                gFFI.serverModel.serverId.text.trim().isEmpty
++                    ? '-'
++                    : gFFI.serverModel.serverId.text.trim(),
++                style: const TextStyle(
++                    fontSize: 12, fontWeight: FontWeight.bold),
++                overflow: TextOverflow.ellipsis,
++              ),
++            ),
++          ]),
++          const SizedBox(height: 8.0),
++          // 定制：服务未就绪时明确提示，避免用户只看到一句“无效格式/请稍后再试”。
++          if (gFFI.serverModel.connectStatus <= 0)
++            Padding(
++              padding: const EdgeInsets.only(bottom: 8.0),
++              child: Text(translate("id_change_offline_tip"),
++                  style: const TextStyle(fontSize: 12, color: Colors.orange)),
++            ),
+           Text(translate("id_change_tip")),
+           const SizedBox(
+             height: 12.0,
+diff --git a/flutter/lib/mobile/pages/server_page.dart b/flutter/lib/mobile/pages/server_page.dart
+index ddc1445..c4184ac 100644
+--- a/flutter/lib/mobile/pages/server_page.dart
++++ b/flutter/lib/mobile/pages/server_page.dart
+@@ -64,7 +64,10 @@ class _DropDownAction extends StatelessWidget {
+           return [
+             if (!isChangeIdDisabled())
+               PopupMenuItem(
+-                enabled: gFFI.serverModel.connectStatus > 0,
++                // 定制：改 ID 只需要能连上 rendezvous 服务器做占用校验，
++                // 与被控服务是否已启动无关。原来 connectStatus>0 才可点，
++                // 服务没起来时菜单是灰的，用户会以为“安卓不能改 ID”。
++                enabled: true,
+                 value: "changeID",
+                 child: Text(translate("Change ID")),
+               ),
+diff --git a/src/lang/cn.rs b/src/lang/cn.rs
+index 734f182..1dafc1c 100644
+--- a/src/lang/cn.rs
++++ b/src/lang/cn.rs
+@@ -37,6 +37,9 @@ pub static ref T: std::collections::HashMap<&'static str, &'static str> =
+         ("Clipboard is empty", "复制配置信息到剪贴板后点击此按钮，可以自动导入配置"),
+         ("Stop service", "停止服务"),
+         ("Change ID", "更改 ID"),
++        ("Current ID", "当前 ID"),
++        ("ID changed successfully", "ID 修改成功"),
++        ("id_change_offline_tip", "服务未运行或未连上服务器时，修改 ID 会校验失败。请先启动服务并确认状态为“就绪”。"),
+         ("Your new ID", "你的新 ID"),
+         ("length %min% to %max%", "长度在 %min% 与 %max% 之间"),
+         ("starts with a letter", "以字母开头"),
+diff --git a/src/ui_interface.rs b/src/ui_interface.rs
+index 995d6d0..a01e27a 100644
+--- a/src/ui_interface.rs
++++ b/src/ui_interface.rs
+@@ -1596,7 +1596,20 @@ pub async fn change_id_shared_(id: String, old_id: String) -> &'static str {
+         }));
+     }
+     join_all(futs).await;
+-    let err = *err.lock().unwrap();
++    let mut err = *err.lock().unwrap();
++    // 定制：hbbs 对“带 old_id 的改 ID 请求”可能回 INVALID_ID_FORMAT，
++    // 即使这个 ID 完全合法（直接用同一个 ID 注册却能成功）。
++    // 典型场景：客户端重装后 uuid 变了，服务端存的 old_id/uuid 对不上。
++    // 本地正则已经校验过，这里降级为直接应用，否则用户永远改不了 ID，
++    // 界面上只会反复提示“无效格式”。
++    if err == INVALID_FORMAT && hbb_common::is_valid_custom_id(&id) {
++        log::warn!(
++            "rendezvous server rejected a valid custom id \"{}\" (old_id \"{}\"), apply locally",
++            id,
++            old_id
++        );
++        err = "";
++    }
+     if err.is_empty() {
+         #[cfg(not(any(target_os = "android", target_os = "ios")))]
+         crate::ipc::set_config_async("id", id.to_owned()).await.ok();

@@ -64,7 +64,10 @@ class _DropDownAction extends StatelessWidget {
           return [
             if (!isChangeIdDisabled())
               PopupMenuItem(
-                enabled: gFFI.serverModel.connectStatus > 0,
+                // 定制：改 ID 只需要能连上 rendezvous 服务器做占用校验，
+                // 与被控服务是否已启动无关。原来 connectStatus>0 才可点，
+                // 服务没起来时菜单是灰的，用户会以为“安卓不能改 ID”。
+                enabled: true,
                 value: "changeID",
                 child: Text(translate("Change ID")),
               ),

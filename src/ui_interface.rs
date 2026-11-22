@@ -1596,7 +1596,20 @@ pub async fn change_id_shared_(id: String, old_id: String) -> &'static str {
         }));
     }
     join_all(futs).await;
-    let err = *err.lock().unwrap();
+    let mut err = *err.lock().unwrap();
+    // 定制：hbbs 对“带 old_id 的改 ID 请求”可能回 INVALID_ID_FORMAT，
+    // 即使这个 ID 完全合法（直接用同一个 ID 注册却能成功）。
+    // 典型场景：客户端重装后 uuid 变了，服务端存的 old_id/uuid 对不上。
+    // 本地正则已经校验过，这里降级为直接应用，否则用户永远改不了 ID，
+    // 界面上只会反复提示“无效格式”。
+    if err == INVALID_FORMAT && hbb_common::is_valid_custom_id(&id) {
+        log::warn!(
+            "rendezvous server rejected a valid custom id \"{}\" (old_id \"{}\"), apply locally",
+            id,
+            old_id
+        );
+        err = "";
+    }
     if err.is_empty() {
         #[cfg(not(any(target_os = "android", target_os = "ios")))]
         crate::ipc::set_config_async("id", id.to_owned()).await.ok();

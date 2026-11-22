@@ -109,8 +109,11 @@ void changeIdDialog() {
         status = await bind.mainGetAsyncStatus();
       }
       if (status.isEmpty) {
-        // ok
+        // 定制：改 ID 成功后立即刷新界面上的 ID 显示，并给出明确反馈，
+        // 否则要等 server_page 的 3 秒轮询，用户会误以为没改成功。
+        await gFFI.serverModel.fetchID();
         close();
+        showToast(translate('ID changed successfully'));
         return;
       }
       setState(() {
@@ -126,6 +129,29 @@ void changeIdDialog() {
       content: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
+          // 定制：把当前 ID 显示出来，改完能立刻对照是否生效。
+          Row(children: [
+            Text('${translate('Current ID')}: ',
+                style: const TextStyle(fontSize: 12, color: Colors.grey)),
+            Flexible(
+              child: Text(
+                gFFI.serverModel.serverId.text.trim().isEmpty
+                    ? '-'
+                    : gFFI.serverModel.serverId.text.trim(),
+                style: const TextStyle(
+                    fontSize: 12, fontWeight: FontWeight.bold),
+                overflow: TextOverflow.ellipsis,
+              ),
+            ),
+          ]),
+          const SizedBox(height: 8.0),
+          // 定制：服务未就绪时明确提示，避免用户只看到一句“无效格式/请稍后再试”。
+          if (gFFI.serverModel.connectStatus <= 0)
+            Padding(
+              padding: const EdgeInsets.only(bottom: 8.0),
+              child: Text(translate("id_change_offline_tip"),
+                  style: const TextStyle(fontSize: 12, color: Colors.orange)),
+            ),
           Text(translate("id_change_tip")),
           const SizedBox(
             height: 12.0,
