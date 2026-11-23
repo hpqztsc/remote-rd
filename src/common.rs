@@ -2340,7 +2340,9 @@ async fn secure_tcp_impl(conn: &mut Stream, key: &str, log_on_success: bool) -> 
     // as WebSocket Secure (wss://) already provides transport layer encryption.
     // This doesn't affect the end-to-end encryption between clients,
     // it only avoids redundant encryption between client and server.
-    if use_ws() {
+    // 定制：wss 本身就加密了，而且 Cloudflare Workers 这类对端根本不实现 hbbs 的
+    // key_exchange；再握手会吃掉服务端发来的第一帧，导致后面协议错位。
+    if use_ws() || matches!(conn, Stream::WebSocket(_)) {
         return Ok(());
     }
     key_exchange(conn, key, log_on_success).await.map(|_| ())

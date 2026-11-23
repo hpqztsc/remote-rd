@@ -15,7 +15,6 @@ use hbb_common::{
     allow_err,
     anyhow::{self, bail},
     config::{self, option2bool, use_ws, Config, CONNECT_TIMEOUT, REG_INTERVAL, RENDEZVOUS_PORT},
-    futures::future::join_all,
     log,
     protobuf::Message as _,
     rendezvous_proto::*,
@@ -348,30 +347,36 @@ impl RendezvousMediator {
             if !config::option2bool("stop-service", &Config::get_option("stop-service"))
                 && !crate::platform::installing_service()
             {
-                let mut futs = Vec::new();
+                // 定制：改成顺序 failover。上游是「同时连所有服务器、任一退出就全体退出」，
+                // 备用节点永远连不稳，反而会把主节点一起拖下线。
+                // 现在按 RENDEZVOUS_SERVERS 顺序逐个尝试，主节点连不上（或刚连就断）才轮到备用。
                 let servers = Config::get_rendezvous_servers();
                 SHOULD_EXIT.store(false, Ordering::SeqCst);
                 MANUAL_RESTARTED.store(false, Ordering::SeqCst);
-                for host in servers.clone() {
-                    let server = server.clone();
-                    let timeout = timeout.clone();
-                    futs.push(tokio::spawn(async move {
-                        if let Err(err) = Self::start(server, host).await {
-                            let err = format!("rendezvous mediator error: {err}");
-                            // When user reboot, there might be below error, waiting too long
-                            // (CONNECT_TIMEOUT 18s) will make user think there is bug
-                            if err.contains("10054") || err.contains("11001") {
-                                // No such host is known. (os error 11001)
-                                // An existing connection was forcibly closed by the remote host. (os error 10054): also happens for UDP
-                                *timeout.write().unwrap() = 3000;
-                            }
-                            log::error!("{err}");
+                for host in servers {
+                    let host_start = Instant::now();
+                    if let Err(err) = Self::start(server.clone(), host.clone()).await {
+                        let err = format!("rendezvous mediator error: {err}");
+                        // When user reboot, there might be below error, waiting too long
+                        // (CONNECT_TIMEOUT 18s) will make user think there is bug
+                        if err.contains("10054") || err.contains("11001") {
+                            // No such host is known. (os error 11001)
+                            // An existing connection was forcibly closed by the remote host. (os error 10054): also happens for UDP
+                            *timeout.write().unwrap() = 3000;
                         }
-                        // SHOULD_EXIT here is to ensure once one exits, the others also exit.
-                        SHOULD_EXIT.store(true, Ordering::SeqCst);
-                    }));
+                        log::error!("{err}");
+                    }
+                    if MANUAL_RESTARTED.load(Ordering::SeqCst) {
+                        // 用户点了「重启服务」或改了配置：回到外层循环重连，不要继续切备用节点
+                        break;
+                    }
+                    if host_start.elapsed().as_secs() >= 30 {
+                        // 这个节点连上并稳定跑了一段，说明它是当前可用的那一个。
+                        // 掉线后优先回到列表第一个（主节点），而不是继续往后试。
+                        break;
+                    }
+                    log::warn!("{} 未建立稳定连接，尝试下一个节点", host);
                 }
-                join_all(futs).await;
             } else {
                 server.write().unwrap().close_connections();
             }
@@ -392,6 +397,14 @@ impl RendezvousMediator {
     }
 
     fn get_host_prefix(host: &str) -> String {
+        // 定制：备用节点是 wss://host/ws/id 形式，前缀先去协议头和路径，
+        // 否则配置键会变成 "wss://rd-backup" 这种没法看的东西。
+        let host = host
+            .trim_start_matches("wss://")
+            .trim_start_matches("ws://")
+            .split('/')
+            .next()
+            .unwrap_or(host);
         host.split(".")
             .next()
             .map(|x| {
@@ -691,6 +704,8 @@ impl RendezvousMediator {
             || Config::is_proxy()
             || use_ws()
             || crate::is_udp_disabled()
+            // 定制：端点本身就是 wss:// 时（Cloudflare Workers 备用节点），必须走 TCP + WebSocket
+            || hbb_common::websocket::is_ws_endpoint(&host)
         {
             Self::start_tcp(server, host).await
         } else {

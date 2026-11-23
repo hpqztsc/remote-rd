@@ -113,7 +113,9 @@ const CHARS: &[char] = &[
     'm', 'n', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
 ];
 
-pub const RENDEZVOUS_SERVERS: &[&str] = &["dk6.ztsc.host"];
+// 定制：主节点 + Cloudflare Workers 备用节点。备用节点必须写成完整的 wss URL：
+// check_ws() 见到 wss:// 会原样返回，客户端才会连 443 的 /ws/id，而不是主节点的 21118。
+pub const RENDEZVOUS_SERVERS: &[&str] = &["dk6.ztsc.host", "wss://rd-backup.ztsc.host/ws/id"];
 pub const RS_PUB_KEY: &str = "XuICuhdJOMB8yFj85s7qwXnRfokuAjG6Bojw1ggLQuo=";
 
 pub const RENDEZVOUS_PORT: i32 = 21116;
