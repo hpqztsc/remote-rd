@@ -235,6 +235,8 @@ impl IceRoute {
 }
 
 static SHOULD_EXIT: AtomicBool = AtomicBool::new(false);
+/// 定制：failover 用。当前节点是否已经收到过 hbbs 的应答（说明通道真的通了）。
+static REGISTER_OK: AtomicBool = AtomicBool::new(false);
 static MANUAL_RESTARTED: AtomicBool = AtomicBool::new(false);
 static MANUAL_RESTART_NOTIFY: Notify = Notify::const_new();
 static SENT_REGISTER_PK: AtomicBool = AtomicBool::new(false);
@@ -347,35 +349,54 @@ impl RendezvousMediator {
             if !config::option2bool("stop-service", &Config::get_option("stop-service"))
                 && !crate::platform::installing_service()
             {
-                // 定制：改成顺序 failover。上游是「同时连所有服务器、任一退出就全体退出」，
-                // 备用节点永远连不稳，反而会把主节点一起拖下线。
-                // 现在按 RENDEZVOUS_SERVERS 顺序逐个尝试，主节点连不上（或刚连就断）才轮到备用。
+                // 定制：顺序 failover。上游是「同时连所有服务器、任一退出就全体退出」，
+                // 有两个问题：① 备用节点连不稳会把主节点的连接一起拖下线；
+                // ② UDP 通道对端挂了时 start_udp 会无限重试、永不返回，压根走不到备用节点。
+                // 所以这里把每个节点的连接跑在独立任务里，外加一个「注册超时」看门狗：
+                // 25 秒内没拿到过服务端应答就 abort 掉，换下一个节点。
                 let servers = Config::get_rendezvous_servers();
                 SHOULD_EXIT.store(false, Ordering::SeqCst);
                 MANUAL_RESTARTED.store(false, Ordering::SeqCst);
                 for host in servers {
-                    let host_start = Instant::now();
-                    if let Err(err) = Self::start(server.clone(), host.clone()).await {
-                        let err = format!("rendezvous mediator error: {err}");
-                        // When user reboot, there might be below error, waiting too long
-                        // (CONNECT_TIMEOUT 18s) will make user think there is bug
-                        if err.contains("10054") || err.contains("11001") {
-                            // No such host is known. (os error 11001)
-                            // An existing connection was forcibly closed by the remote host. (os error 10054): also happens for UDP
-                            *timeout.write().unwrap() = 3000;
+                    REGISTER_OK.store(false, Ordering::SeqCst);
+                    let handle = tokio::spawn(Self::start(server.clone(), host.clone()));
+                    let mut registered = false;
+                    let attempt_start = Instant::now();
+                    while !handle.is_finished() {
+                        sleep(2.).await;
+                        if REGISTER_OK.load(Ordering::SeqCst) {
+                            registered = true;
                         }
-                        log::error!("{err}");
+                        if !registered && attempt_start.elapsed().as_secs() >= 25 {
+                            log::warn!("{} 25 秒内没能注册成功，切换到下一个节点", &host);
+                            handle.abort();
+                            break;
+                        }
+                    }
+                    match handle.await {
+                        Ok(Ok(())) => {}
+                        Ok(Err(err)) => {
+                            let err = format!("rendezvous mediator error: {err}");
+                            // When user reboot, there might be below error, waiting too long
+                            // (CONNECT_TIMEOUT 18s) will make user think there is bug
+                            if err.contains("10054") || err.contains("11001") {
+                                // No such host is known. (os error 11001)
+                                // An existing connection was forcibly closed by the remote host. (os error 10054): also happens for UDP
+                                *timeout.write().unwrap() = 3000;
+                            }
+                            log::error!("{err}");
+                        }
+                        // abort 掉的（注册超时）：正常路径，不用报错
+                        Err(_) => {}
                     }
                     if MANUAL_RESTARTED.load(Ordering::SeqCst) {
                         // 用户点了「重启服务」或改了配置：回到外层循环重连，不要继续切备用节点
                         break;
                     }
-                    if host_start.elapsed().as_secs() >= 30 {
-                        // 这个节点连上并稳定跑了一段，说明它是当前可用的那一个。
-                        // 掉线后优先回到列表第一个（主节点），而不是继续往后试。
+                    if registered {
+                        // 这个节点连上过又掉线，回到列表第一个（主节点）重新开始试
                         break;
                     }
-                    log::warn!("{} 未建立稳定连接，尝试下一个节点", host);
                 }
             } else {
                 server.write().unwrap().close_connections();
@@ -548,6 +569,7 @@ impl RendezvousMediator {
         match msg {
             Some(rendezvous_message::Union::RegisterPeerResponse(rpr)) => {
                 update_latency();
+                REGISTER_OK.store(true, Ordering::SeqCst);
                 if rpr.request_pk {
                     log::info!("request_pk received from {}", self.host);
                     self.register_pk(sink).await?;
@@ -555,6 +577,7 @@ impl RendezvousMediator {
             }
             Some(rendezvous_message::Union::RegisterPkResponse(rpr)) => {
                 update_latency();
+                REGISTER_OK.store(true, Ordering::SeqCst);
                 match rpr.result.enum_value() {
                     Ok(register_pk_response::Result::OK) => {
                         Config::set_key_confirmed(true);
