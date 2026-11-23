@@ -387,13 +387,15 @@ impl RendezvousMediator {
                         let dead = if registered {
                             uptime_secs().saturating_sub(seen) >= 35
                         } else {
-                            attempt_start.elapsed().as_secs() >= 20
+                            // wss 首次握手实测能到 14 秒（TLS + 冷启动的 Durable Object），
+                            // 20 秒不够用，给到 40 秒
+                            attempt_start.elapsed().as_secs() >= 40
                         };
                         if dead {
                             if registered {
                                 log::warn!("{} 已 35 秒无应答，判定链路失效，切换到下一个节点", &host);
                             } else {
-                                log::warn!("{} 20 秒内没能注册成功，切换到下一个节点", &host);
+                                log::warn!("{} 40 秒内没能注册成功，切换到下一个节点", &host);
                             }
                             handle.abort();
                             break;
@@ -702,6 +704,8 @@ impl RendezvousMediator {
         };
         let mut timer = crate::rustdesk_interval(interval(crate::TIMER_OUT));
         let mut last_register_sent: Option<Instant> = None;
+        // 定制：wss 通道的主动心跳时间戳
+        let mut last_ping: Option<Instant> = None;
         let mut last_recv_msg = Instant::now();
         // we won't support connecting to multiple rendzvous servers any more, so we can use a global variable here.
         Config::set_host_key_confirmed(&rz.host_prefix, false);
@@ -739,6 +743,17 @@ impl RendezvousMediator {
                         last_register_sent.map(|x| x.elapsed().as_millis() as i64).unwrap_or(REG_INTERVAL) >= REG_INTERVAL {
                         rz.register_pk(Sink::Stream(&mut conn)).await?;
                         last_register_sent = Some(Instant::now());
+                    } else if hbb_common::websocket::is_ws_endpoint(&host)
+                        && last_ping
+                            .map(|x| x.elapsed().as_millis() as i64)
+                            .unwrap_or(REG_INTERVAL)
+                            >= REG_INTERVAL
+                    {
+                        // 定制：wss 通道没有系统级 keepalive，对端进程挂了 socket 也不会报错，
+                        // 而 hbbs 的「空帧心跳」只有原生服务端会发，Cloudflare Workers 版不发。
+                        // 所以主动每 REG_INTERVAL 发一次 register_peer 当心跳，用它的应答判活。
+                        rz.register_peer(Sink::Stream(&mut conn)).await?;
+                        last_ping = Some(Instant::now());
                     }
                 }
             }
