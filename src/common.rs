@@ -849,6 +849,12 @@ async fn test_rendezvous_server_() {
     }
     let mut futs = Vec::new();
     for host in servers {
+        // 定制：wss:// 的备用节点不能这么探——connect_tcp 会真的建一条完整的
+        // ws 连接（TLS + 握手），探完就扔，Worker 那边 30 秒后还会因为它没注册
+        // 回一个 4004，纯属噪声。它的延迟由 rendezvous mediator 自己上报。
+        if hbb_common::websocket::is_ws_endpoint(&host) {
+            continue;
+        }
         futs.push(tokio::spawn(async move {
             let tm = std::time::Instant::now();
             if socket_client::connect_tcp(

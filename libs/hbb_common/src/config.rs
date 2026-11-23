@@ -1107,6 +1107,12 @@ impl Config {
         let mut host = "".to_owned();
         let mut delay = i64::MAX;
         for (tmp_host, tmp_delay) in ONLINE.lock().unwrap().iter() {
+            // 定制：这个字段会被拿去拼 API 服务器地址（http://{host}:21114）、
+            // 也会被当成裸主机名用，所以不能存 wss:// 这种带 scheme 的地址。
+            // 备用节点的延迟照常记进 ONLINE，只是不参与「选谁写进 config」。
+            if crate::websocket::is_ws_endpoint(tmp_host) {
+                continue;
+            }
             if tmp_delay > &0 && tmp_delay < &delay {
                 delay = *tmp_delay;
                 host = tmp_host.to_string();
