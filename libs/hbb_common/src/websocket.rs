@@ -304,6 +304,8 @@ impl WsFramedStream {
         ms_timeout: u64,
     ) -> ResultType<Self> {
         let proxy_conf = Config::get_socks();
+        // 定制：每次建连都留一条痕迹，排查「一条链路出现两条 ws 连接」时靠它对齐时间线。
+        log::debug!("WsFramedStream::new: {}", url.as_ref());
         let (stream, addr) =
             Self::connect(url.as_ref(), local_addr, proxy_conf.as_ref(), ms_timeout).await?;
 

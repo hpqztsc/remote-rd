@@ -382,10 +382,12 @@ impl RendezvousMediator {
                             registered = true;
                         }
                         // ① 一直没注册成功：给 20 秒（DNS + 握手足够），到点换下一个节点。
-                        // ② 注册过但 35 秒没再收到任何应答：这条通道其实已经废了。
+                        // ② 注册过但 65 秒没再收到任何东西：这条通道其实已经废了。
                         //    start_udp 自己不判超时，只会无限重发，所以只能在这里判死。
+                        //    阈值要大于「心跳间隔 × 2」：服务端 30 秒一次心跳，65 秒刚好能
+                        //    容忍丢一个，又不至于让切换拖太久。
                         let dead = if registered {
-                            uptime_secs().saturating_sub(seen) >= 35
+                            uptime_secs().saturating_sub(seen) >= 65
                         } else {
                             // wss 首次握手实测能到 14 秒（TLS + 冷启动的 Durable Object），
                             // 20 秒不够用，给到 40 秒
@@ -393,7 +395,7 @@ impl RendezvousMediator {
                         };
                         if dead {
                             if registered {
-                                log::warn!("{} 已 35 秒无应答，判定链路失效，切换到下一个节点", &host);
+                                log::warn!("{} 已 65 秒无应答，判定链路失效，切换到下一个节点", &host);
                             } else {
                                 log::warn!("{} 40 秒内没能注册成功，切换到下一个节点", &host);
                             }
@@ -722,6 +724,10 @@ impl RendezvousMediator {
                     last_recv_msg = Instant::now();
                     let bytes = res.ok_or_else(|| anyhow::anyhow!("Rendezvous connection is reset by the peer"))??;
                     if bytes.is_empty() {
+                        // 定制：空帧就是服务端心跳（原生 hbbs 和 Cloudflare Workers 版都发），
+                        // 它同样证明这条链路还通，必须计入活跃时间，否则下面的判死逻辑
+                        // 会把一条健康的连接按心跳周期反复掐断。
+                        mark_server_msg();
                         // After fixing frequent register_pk, for websocket, nginx need to set proxy_read_timeout to more than 60 seconds, eg: 120s
                         // https://serverfault.com/questions/1060525/why-is-my-websocket-connection-gets-closed-in-60-seconds
                         conn.send_bytes(bytes::Bytes::new()).await?;
@@ -744,14 +750,17 @@ impl RendezvousMediator {
                         rz.register_pk(Sink::Stream(&mut conn)).await?;
                         last_register_sent = Some(Instant::now());
                     } else if hbb_common::websocket::is_ws_endpoint(&host)
+                        && last_recv_msg.elapsed().as_secs() >= 45
                         && last_ping
-                            .map(|x| x.elapsed().as_millis() as i64)
-                            .unwrap_or(REG_INTERVAL)
-                            >= REG_INTERVAL
+                            .map(|x| x.elapsed().as_secs() >= (REG_INTERVAL / 1000) as u64)
+                            .unwrap_or(true)
                     {
-                        // 定制：wss 通道没有系统级 keepalive，对端进程挂了 socket 也不会报错，
-                        // 而 hbbs 的「空帧心跳」只有原生服务端会发，Cloudflare Workers 版不发。
-                        // 所以主动每 REG_INTERVAL 发一次 register_peer 当心跳，用它的应答判活。
+                        // 定制：服务端自己有 30 秒一次的空帧心跳，正常情况这里一次都不用发。
+                        // 只有连着 45 秒没收到任何东西时才补一发 register_peer 探活：
+                        // 它要是也不回，就是真的断了，让上面的判死逻辑接手。
+                        // （1.5.7 是每 15 秒无条件发一次，实测每发一次会多开一条 ws 连接，
+                        //   两条连接抢同一个 session，反而把主连接饿死。）
+                        log::debug!("{} 静默 45 秒，补发一次心跳", &host);
                         rz.register_peer(Sink::Stream(&mut conn)).await?;
                         last_ping = Some(Instant::now());
                     }

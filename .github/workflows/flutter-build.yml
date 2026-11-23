@@ -2183,6 +2183,10 @@ jobs:
             # rpm package
             echo -e "start packaging fedora package"
             pushd /workspace
+            # 定制：spec 里的 Version 是写死的 1.5.3，产物会变成 rustdesk-1.5.3-0.*.rpm，
+            # 和 tag 对不上，发布页每次都会混进旧版本号的包。
+            sed -i "s/^Version:.*/Version: ${{ env.VERSION }}/" ./res/rpm-flutter.spec
+            sed -i "s/^Version:.*/Version: ${{ env.VERSION }}/" ./res/rpm-flutter-suse.spec
             case ${{ matrix.job.arch }} in
               aarch64)
                 sed -i "s/linux\/x64/linux\/arm64/g" ./res/rpm-flutter.spec

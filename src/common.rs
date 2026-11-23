@@ -3352,9 +3352,11 @@ mod tests {
             "https://api.telegram.org/bot123/sendMessage",
             "https://admin.example.com"
         ));
+        // 定制：这里原来写的是 dk6.ztsc.host，而它正是本仓库的中继服务器，
+        // 断言「不要走中继代理」必然失败。换成与中继无关的域名，保持用例本意。
         assert!(!should_use_tcp_proxy_for_api_url(
-            "http://dk6.ztsc.host:21114/api/login",
-            "http://dk6.ztsc.host:21114"
+            "http://api.example.com:21114/api/login",
+            "http://api.example.com:21114"
         ));
         assert!(!should_use_tcp_proxy_for_api_url(
             "https://admin.example.com/api/login",
