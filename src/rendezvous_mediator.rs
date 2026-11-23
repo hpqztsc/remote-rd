@@ -355,6 +355,9 @@ impl RendezvousMediator {
         }
         scrap::codec::test_av1();
         *LAST_NOT_DEPLOYED_REGISTER.lock().await = None;
+        // 定制：下一轮从哪个节点开始试。连上过再掉线的话，从它的下一个开始，
+        // 免得在刚失效的节点上白等一个注册超时。
+        let mut start_idx = 0usize;
         loop {
             let timeout = Arc::new(RwLock::new(CONNECT_TIMEOUT));
             let conn_start_time = Instant::now();
@@ -370,11 +373,17 @@ impl RendezvousMediator {
                 let servers = Config::get_rendezvous_servers();
                 SHOULD_EXIT.store(false, Ordering::SeqCst);
                 MANUAL_RESTARTED.store(false, Ordering::SeqCst);
-                for host in servers {
+                let n = servers.len();
+                for k in 0..n {
+                    let idx = (start_idx + k) % n;
+                    let host = servers[idx].clone();
                     LAST_SERVER_MSG.store(0, Ordering::SeqCst);
                     let handle = tokio::spawn(Self::start(server.clone(), host.clone()));
                     let mut registered = false;
                     let attempt_start = Instant::now();
+                    // 定制：挂在备用节点上时，隔 5 分钟探一次主节点，探通就切回去
+                    let mut next_probe_at = Instant::now() + Duration::from_secs(300);
+                    let mut back_to_primary = false;
                     while !handle.is_finished() {
                         sleep(2.).await;
                         let seen = LAST_SERVER_MSG.load(Ordering::SeqCst);
@@ -402,6 +411,17 @@ impl RendezvousMediator {
                             handle.abort();
                             break;
                         }
+                        // 定制：备用节点连得好好的时候，定期确认主节点是不是已经恢复。
+                        // 用一次真实的 register_peer 注册来判定——只要对端有应答就算活。
+                        if registered && idx != 0 && Instant::now() >= next_probe_at {
+                            next_probe_at = Instant::now() + Duration::from_secs(300);
+                            if Self::probe_rendezvous(&servers[0]).await {
+                                log::info!("主节点 {} 已恢复，切回去", &servers[0]);
+                                back_to_primary = true;
+                                handle.abort();
+                                break;
+                            }
+                        }
                     }
                     match handle.await {
                         Ok(Ok(())) => {}
@@ -424,7 +444,13 @@ impl RendezvousMediator {
                         break;
                     }
                     if registered {
-                        // 这个节点连上过又掉线，回到列表第一个（主节点）重新开始试
+                        if back_to_primary {
+                            // 主节点恢复了：回到列表第一个重新开始
+                            start_idx = 0;
+                        } else {
+                            // 连上过又掉线：下一轮从它的下一个节点开始试
+                            start_idx = (idx + 1) % n;
+                        }
                         break;
                     }
                 }
@@ -690,6 +716,33 @@ impl RendezvousMediator {
             _ => {}
         }
         Ok(())
+    }
+
+    /// 定制：探一下某个节点活不活——走一次真实的 register_peer 注册，
+    /// 收到任意一帧就说明对端在正常应答。只给「主节点恢复了吗」这种判断用，
+    /// 探完就把连接丢掉，不影响当前正在用的通道。
+    async fn probe_rendezvous(host: &str) -> bool {
+        let host = check_port(host, RENDEZVOUS_PORT);
+        let probe = async {
+            let mut conn = connect_tcp(host.clone(), 8000).await?;
+            let key = crate::get_key(true).await;
+            crate::secure_tcp(&mut conn, &key).await?;
+            let mut msg_out = Message::new();
+            msg_out.set_register_peer(RegisterPeer {
+                id: Config::get_id(),
+                serial: Config::get_serial(),
+                ..Default::default()
+            });
+            Sink::Stream(&mut conn).send(&msg_out).await?;
+            match conn.next().await {
+                Some(Ok(bytes)) => Ok::<bool, anyhow::Error>(!bytes.is_empty()),
+                _ => Ok(false),
+            }
+        };
+        matches!(
+            tokio::time::timeout(Duration::from_secs(10), probe).await,
+            Ok(Ok(true))
+        )
     }
 
     pub async fn start_tcp(server: ServerPtr, host: String) -> ResultType<()> {
