@@ -6,16 +6,8 @@ on:
     paths-ignore:
     - "docs/**"
     - "README.md"
-  push:
-    branches:
-      - master
-    paths-ignore:
-      - ".github/**"
-      - "docs/**"
-      - "README.md"
-      - "res/**"
-      - "appimage/**"
-      - "flatpak/**"
+  # 定制：不再在 push 到 master 时跑——auto-release 已经在同一个 commit 上
+  # 完整构建并出包，两套矩阵同时排队只会让出包时间翻倍。需要单独验证用 workflow_dispatch。
 
 jobs:
   run-ci:
