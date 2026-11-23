@@ -3,7 +3,7 @@ use std::{
     hash::BuildHasher,
     net::SocketAddr,
     sync::{
-        atomic::{AtomicBool, AtomicUsize, Ordering},
+        atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering},
         Arc, RwLock,
     },
     time::{Duration, Instant},
@@ -78,6 +78,8 @@ fn is_reported_relay(relay_server: &str, now: Instant) -> bool {
 }
 
 lazy_static::lazy_static! {
+    // 定制：failover 用来算「多久没收到服务端消息」，用进程内单调时钟避免系统改时间。
+    static ref PROC_START: Instant = Instant::now();
     static ref SOLVING_PK_MISMATCH: Mutex<String> = Default::default();
     static ref LAST_MSG: Mutex<(SocketAddr, Instant)> = Mutex::new((SocketAddr::new([0; 4].into(), 0), Instant::now()));
     static ref LAST_RELAY_MSG: Mutex<(SocketAddr, Instant)> = Mutex::new((SocketAddr::new([0; 4].into(), 0), Instant::now()));
@@ -235,8 +237,19 @@ impl IceRoute {
 }
 
 static SHOULD_EXIT: AtomicBool = AtomicBool::new(false);
-/// 定制：failover 用。当前节点是否已经收到过 hbbs 的应答（说明通道真的通了）。
-static REGISTER_OK: AtomicBool = AtomicBool::new(false);
+/// 定制：failover 用。最近一次收到 hbbs 应答的时刻（进程启动后的秒数），0 表示还没收到过。
+/// 只记「有没有 socket 连接」不够：UDP 对端挂了 socket 是不会有感知的。
+static LAST_SERVER_MSG: AtomicU64 = AtomicU64::new(0);
+
+#[inline]
+fn uptime_secs() -> u64 {
+    PROC_START.elapsed().as_secs()
+}
+
+#[inline]
+fn mark_server_msg() {
+    LAST_SERVER_MSG.store(uptime_secs(), Ordering::SeqCst);
+}
 static MANUAL_RESTARTED: AtomicBool = AtomicBool::new(false);
 static MANUAL_RESTART_NOTIFY: Notify = Notify::const_new();
 static SENT_REGISTER_PK: AtomicBool = AtomicBool::new(false);
@@ -358,17 +371,30 @@ impl RendezvousMediator {
                 SHOULD_EXIT.store(false, Ordering::SeqCst);
                 MANUAL_RESTARTED.store(false, Ordering::SeqCst);
                 for host in servers {
-                    REGISTER_OK.store(false, Ordering::SeqCst);
+                    LAST_SERVER_MSG.store(0, Ordering::SeqCst);
                     let handle = tokio::spawn(Self::start(server.clone(), host.clone()));
                     let mut registered = false;
                     let attempt_start = Instant::now();
                     while !handle.is_finished() {
                         sleep(2.).await;
-                        if REGISTER_OK.load(Ordering::SeqCst) {
+                        let seen = LAST_SERVER_MSG.load(Ordering::SeqCst);
+                        if seen > 0 {
                             registered = true;
                         }
-                        if !registered && attempt_start.elapsed().as_secs() >= 25 {
-                            log::warn!("{} 25 秒内没能注册成功，切换到下一个节点", &host);
+                        // ① 一直没注册成功：给 20 秒（DNS + 握手足够），到点换下一个节点。
+                        // ② 注册过但 35 秒没再收到任何应答：这条通道其实已经废了。
+                        //    start_udp 自己不判超时，只会无限重发，所以只能在这里判死。
+                        let dead = if registered {
+                            uptime_secs().saturating_sub(seen) >= 35
+                        } else {
+                            attempt_start.elapsed().as_secs() >= 20
+                        };
+                        if dead {
+                            if registered {
+                                log::warn!("{} 已 35 秒无应答，判定链路失效，切换到下一个节点", &host);
+                            } else {
+                                log::warn!("{} 20 秒内没能注册成功，切换到下一个节点", &host);
+                            }
                             handle.abort();
                             break;
                         }
@@ -569,7 +595,7 @@ impl RendezvousMediator {
         match msg {
             Some(rendezvous_message::Union::RegisterPeerResponse(rpr)) => {
                 update_latency();
-                REGISTER_OK.store(true, Ordering::SeqCst);
+                mark_server_msg();
                 if rpr.request_pk {
                     log::info!("request_pk received from {}", self.host);
                     self.register_pk(sink).await?;
@@ -577,7 +603,7 @@ impl RendezvousMediator {
             }
             Some(rendezvous_message::Union::RegisterPkResponse(rpr)) => {
                 update_latency();
-                REGISTER_OK.store(true, Ordering::SeqCst);
+                mark_server_msg();
                 match rpr.result.enum_value() {
                     Ok(register_pk_response::Result::OK) => {
                         Config::set_key_confirmed(true);
