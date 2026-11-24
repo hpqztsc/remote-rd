@@ -1518,6 +1518,15 @@ impl RendezvousMediator {
 
     fn check_relay_request(&self, rr: &RequestRelay, now: Instant) -> ResultType<()> {
         crate::common::check_relay_uuid(&rr.uuid)?;
+        // 定制：Cloudflare Workers 版给的中继地址是一整条 wss URL
+        // （wss://<域名>/ws/relay/<uuid>），它和本站点同源，但过不了下面那套
+        // 「端口 +1」的比较，会被当成「对端没提供过这个中继」丢掉——实测
+        // 切到备用节点后会话根本建不起来，日志是 Ignored relay request。
+        if hbb_common::websocket::is_ws_endpoint(&rr.relay_server)
+            && Self::get_host_prefix(&rr.relay_server) == Self::get_host_prefix(&self.host)
+        {
+            return Ok(());
+        }
         if !is_reported_relay(&rr.relay_server, now)
             && check_port(&rr.relay_server, config::RELAY_PORT)
                 != check_port(self.get_relay_server(String::new()), config::RELAY_PORT)
