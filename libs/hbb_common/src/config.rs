@@ -1074,15 +1074,15 @@ impl Config {
     pub fn get_rendezvous_servers() -> Vec<String> {
         let s = EXE_RENDEZVOUS_SERVER.read().unwrap().clone();
         if !s.is_empty() {
-            return vec![s];
+            return Self::with_builtin_backups(vec![s]);
         }
         let s = Self::get_option("custom-rendezvous-server");
         if !s.is_empty() {
-            return vec![s];
+            return Self::with_builtin_backups(vec![s]);
         }
         let s = PROD_RENDEZVOUS_SERVER.read().unwrap().clone();
         if !s.is_empty() {
-            return vec![s];
+            return Self::with_builtin_backups(vec![s]);
         }
         let serial_obsolute = CONFIG2.read().unwrap().serial > SERIAL;
         if serial_obsolute {
@@ -1092,10 +1092,48 @@ impl Config {
                 .map(|x| x.to_owned())
                 .collect();
             if !ss.is_empty() {
-                return ss;
+                return Self::with_builtin_backups(ss);
             }
         }
         return RENDEZVOUS_SERVERS.iter().map(|x| x.to_string()).collect();
+    }
+
+    /// 取出 host 部分，去掉 scheme、路径和端口，用来判断两个地址是不是同一台。
+    fn host_only_of(s: &str) -> String {
+        let s = s
+            .trim_start_matches("wss://")
+            .trim_start_matches("ws://")
+            .trim_start_matches("https://")
+            .trim_start_matches("http://");
+        let s = s.split('/').next().unwrap_or(s);
+        match s.rsplit_once(':') {
+            Some((h, p)) if !p.is_empty() && p.chars().all(|c| c.is_ascii_digit()) => h.to_owned(),
+            _ => s.to_owned(),
+        }
+    }
+
+    /// 定制：不管主节点是从哪儿来的（界面里填的、exe 参数带的、还是环境给的），
+    /// 只要它就是我们自己的 dk6，就把编译期写死的备用节点接在后面。
+    /// 上游这里遇到前三种来源会直接 return 单个节点——结果是只要用户在设置里
+    /// 填过一次服务器地址，failover 就静默失效，主节点一挂客户端彻底连不上。
+    fn with_builtin_backups(mut servers: Vec<String>) -> Vec<String> {
+        let Some(primary) = servers.first().cloned() else {
+            return servers;
+        };
+        if RENDEZVOUS_SERVERS.is_empty() || Self::host_only_of(&primary) != Self::host_only_of(RENDEZVOUS_SERVERS[0]) {
+            // 不是我们的主节点，别把别人的 ID 往我们的备用节点上送
+            return servers;
+        }
+        for backup in &RENDEZVOUS_SERVERS[1..] {
+            let dup = servers
+                .iter()
+                .any(|x| Self::host_only_of(x) == Self::host_only_of(backup));
+            if !dup {
+                servers.push((*backup).to_owned());
+                log::info!("failover: 备用节点 {} 已加入候选列表", backup);
+            }
+        }
+        servers
     }
 
     pub fn reset_online() {
